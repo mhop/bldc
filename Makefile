@@ -147,6 +147,7 @@ CSRC = $(STARTUPSRC) \
        flash_helper.c \
        mc_interface.c \
        mcpwm_foc.c \
+       s_lcd3.c \
        $(HWSRC) \
        $(APPSRC) \
        $(NRFSRC)

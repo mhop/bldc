@@ -409,6 +409,14 @@ void mc_interface_set_pid_pos(float pos) {
 	}
 }
 
+void mc_interface_set_current_limit_app(float current) {
+	m_conf.lu_current_max = current;
+}
+
+void mc_interface_set_rpm_limit_app(float erpm) {
+	m_conf.lu_erpm_max = erpm;
+}
+
 void mc_interface_set_current(float current) {
 	if (mc_interface_try_input()) {
 		return;

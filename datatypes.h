@@ -171,6 +171,9 @@ typedef struct {
 	float lo_in_current_min;
 	float lo_current_motor_max_now;
 	float lo_current_motor_min_now;
+	// user limits (for limit from application)
+	float lu_current_max;	// max motor current
+	float lu_erpm_max;
 	// Sensorless (bldc)
 	float sl_min_erpm;
 	float sl_min_erpm_cycle_int_limit;
@@ -256,6 +259,7 @@ typedef enum {
 	APP_ADC_UART,
 	APP_NUNCHUK,
 	APP_NRF,
+	APP_EV,
 	APP_CUSTOM
 } app_use;
 
@@ -339,6 +343,42 @@ typedef struct {
 	float tc_max_diff;
 	uint32_t update_rate_hz;
 } adc_config;
+
+typedef struct {
+	float voltage1_start;
+	float voltage1_end;
+	float voltage2_start;
+	float voltage2_end;
+	bool use_filter;
+	float throttle_exp;
+	float throttle_exp_brake;
+	thr_exp_mode throttle_exp_mode;
+	float ramp_time_pos;
+	float ramp_time_neg;
+	uint32_t update_rate_hz;
+	float wheel_factor;
+	float wheel_diameter;
+	bool use_pulse;
+	bool use_display;
+	bool use_display_vmax;
+	bool use_pas;
+	bool use_throttle;
+	bool use_throttle_wo_pas;
+	bool use_throttle_brake;
+	float mode_1_current;
+	float mode_2_current;
+	float mode_3_current;
+	float mode_4_current;
+	float mode_5_current;
+	float mode_6_current;
+	uint32_t mode_1_speed;
+	uint32_t mode_2_speed;
+	uint32_t mode_3_speed;
+	uint32_t mode_4_speed;
+	uint32_t mode_5_speed;
+	uint32_t mode_6_speed;
+
+} ev_config;
 
 // Nunchuk control types
 typedef enum {
@@ -436,6 +476,8 @@ typedef struct {
 	// ADC application settings
 	adc_config app_adc_conf;
 
+	ev_config app_ev_conf;
+
 	// UART application settings
 	uint32_t app_uart_baudrate;
 
@@ -481,6 +523,7 @@ typedef enum {
 	COMM_ALIVE,
 	COMM_GET_DECODED_PPM,
 	COMM_GET_DECODED_ADC,
+	COMM_GET_DECODED_EV,
 	COMM_GET_DECODED_CHUK,
 	COMM_FORWARD_CAN,
 	COMM_SET_CHUCK_DATA,
