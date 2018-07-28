@@ -28,12 +28,29 @@
 #include "comm_can.h"
 #include "hw.h"
 #include <math.h>
+#include "commands.h"
 
 // Settings
 #define MAX_CAN_AGE						0.1
 #define MIN_MS_WITHOUT_POWER			500
 #define FILTER_SAMPLES					5
 #define RPM_FILTER_SAMPLES				8
+
+#define mean_filter_float(val, cnt)    \
+do {                                   \
+	static float filter_buffer[cnt];   \
+	static int filter_ptr = 0;         \
+                                       \
+	filter_buffer[filter_ptr++] = val; \
+	if (filter_ptr >= (cnt)) {         \
+		filter_ptr = 0;                \
+	}                                  \
+	val = 0.0;                         \
+	for (int i = 0;i < (cnt);i++) {    \
+		val += filter_buffer[i];       \
+	}                                  \
+	val /= FILTER_SAMPLES;             \
+} while(0)
 
 // Threads
 static THD_FUNCTION(adc_thread, arg);
@@ -50,6 +67,35 @@ static volatile bool use_rx_tx_as_buttons = false;
 static volatile bool stop_now = true;
 static volatile bool is_running = false;
 
+// PAS -----------------------
+static bool with_pas=true;
+static const unsigned int pas_wait_max=MS2ST(400);
+static const unsigned int move_wait_max=S2ST(5*60);
+static const unsigned int pas_backcnt_min=2;
+static const float pas_rpm_max_no_pedal=900.0; // 6kmh
+static const float pas_pwr_pedal=+0.4;
+static const float pas_pwr_brake=-0.98;
+
+static void icuwidthcb(ICUDriver *icup);
+#define TIMER_FREQ               10000
+static ICUConfig __attribute__((unused))  icucfg = {
+		ICU_INPUT_ACTIVE_HIGH,
+		TIMER_FREQ,
+		icuwidthcb,
+		NULL, //icuperiodcb,
+		NULL,
+		HW_ICU_CHANNEL,
+		0
+		};
+static icucnt_t pas_t_on, pas_t_per, pas_t_off;
+static bool pas_updated;
+static void icuwidthcb(ICUDriver *icup) {
+	pas_t_off = icuGetWidthX(icup);
+	pas_t_per = icuGetPeriodX(icup);
+	pas_t_on = chVTGetSystemTimeX();
+	pas_updated=true;
+}
+
 void app_adc_configure(adc_config *conf) {
 	config = *conf;
 	ms_without_power = 0.0;
@@ -62,6 +108,10 @@ void app_adc_start(bool use_rx_tx) {
 }
 
 void app_adc_stop(void) {
+	if (with_pas && is_running) {
+		icuStop(&HW_ICU_DEV);
+		palSetPadMode(HW_ICU_GPIO, HW_ICU_PIN, PAL_MODE_INPUT);
+	}
 	stop_now = true;
 	while (is_running) {
 		chThdSleepMilliseconds(1);
@@ -84,6 +134,57 @@ float app_adc_get_voltage2(void) {
 	return read_voltage2;
 }
 
+static float pas_check(float pwr, float rpm)
+{
+	static unsigned int backcnt=0;
+	static systime_t t_move=0;
+	//bool moving;
+	systime_t t = chVTGetSystemTimeX();
+	static float pwr_pas;
+
+	if(rpm>20) t_move=t;
+	if (t-t_move > move_wait_max) {
+		//moving=false;
+		LED_RED_OFF();
+		//palSetPad(GPIOA, 6);
+	}else {
+		//moving=true;
+		LED_RED_ON();
+		//palClearPad(GPIOA, 6);
+	}
+
+	if (t-pas_t_on < pas_wait_max) { // pedaling
+		if(pas_updated) {
+			if(pas_t_off<pas_t_per/2) { // backwards
+				if (++backcnt>=pas_backcnt_min) pwr_pas = pas_pwr_brake; // start braking after a few pulses
+				else                            pwr_pas = 0.0;
+			} else {
+				pwr_pas = pas_pwr_pedal;
+				backcnt=0;
+			}
+			pas_updated=false;
+		}
+		pwr = utils_max_abs(pwr_pas, pwr);
+	} else { // not pedaling
+		backcnt=0;
+		pwr_pas=0;
+		if (rpm>pas_rpm_max_no_pedal) pwr=0.0;
+	}
+	if (rpm<20) pwr=0.0; // not while not moving
+#if 0
+	static int n=0;
+	if(++n>1000 || pas_updated) {
+		int pp=pwr_pas*100, p=pwr*100, r=rpm*100;
+		commands_printf("pwrpas:%d, pwr:%d rpm:%d mov:%d",
+		                pp, p, r, moving);
+		commands_printf("  t:%d ton:%d tper:%d toff:%d,back:%d\n",
+			                t, pas_t_on, pas_t_per, pas_t_off, backcnt);
+		n=0;
+	}
+#endif
+	return pwr;
+}
+
 
 static THD_FUNCTION(adc_thread, arg) {
 	(void)arg;
@@ -91,13 +192,20 @@ static THD_FUNCTION(adc_thread, arg) {
 	chRegSetThreadName("APP_ADC");
 
 	// Set servo pin as an input with pullup
-	if (use_rx_tx_as_buttons) {
-		palSetPadMode(HW_UART_TX_PORT, HW_UART_TX_PIN, PAL_MODE_INPUT_PULLUP);
-		palSetPadMode(HW_UART_RX_PORT, HW_UART_RX_PIN, PAL_MODE_INPUT_PULLUP);
+	if (with_pas) {
+		icuStart(&HW_ICU_DEV, &icucfg);
+		palSetPadMode(HW_ICU_GPIO, HW_ICU_PIN, PAL_MODE_ALTERNATE(HW_ICU_GPIO_AF));
+		icuStartCapture(&HW_ICU_DEV);
+		icuEnableNotifications(&HW_ICU_DEV);
+		//palSetPadMode(GPIOA, 6, PAL_MODE_OUTPUT_PUSHPULL); // EXT2 output to light-switcher-enable
 	} else {
-		palSetPadMode(HW_ICU_GPIO, HW_ICU_PIN, PAL_MODE_INPUT_PULLUP);
+		if (use_rx_tx_as_buttons) {
+			palSetPadMode(HW_UART_TX_PORT, HW_UART_TX_PIN, PAL_MODE_INPUT_PULLUP);
+			palSetPadMode(HW_UART_RX_PORT, HW_UART_RX_PIN, PAL_MODE_INPUT_PULLUP);
+		} else {
+			palSetPadMode(HW_ICU_GPIO, HW_ICU_PIN, PAL_MODE_INPUT);
+		}
 	}
-
 	is_running = true;
 
 	for(;;) {
@@ -129,19 +237,7 @@ static THD_FUNCTION(adc_thread, arg) {
 
 		// Optionally apply a mean value filter
 		if (config.use_filter) {
-			static float filter_buffer[FILTER_SAMPLES];
-			static int filter_ptr = 0;
-
-			filter_buffer[filter_ptr++] = pwr;
-			if (filter_ptr >= FILTER_SAMPLES) {
-				filter_ptr = 0;
-			}
-
-			pwr = 0.0;
-			for (int i = 0;i < FILTER_SAMPLES;i++) {
-				pwr += filter_buffer[i];
-			}
-			pwr /= FILTER_SAMPLES;
+			mean_filter_float(pwr, FILTER_SAMPLES);
 		}
 
 		// Map the read voltage
@@ -190,19 +286,7 @@ static THD_FUNCTION(adc_thread, arg) {
 
 		// Optionally apply a mean value filter
 		if (config.use_filter) {
-			static float filter_buffer2[FILTER_SAMPLES];
-			static int filter_ptr2 = 0;
-
-			filter_buffer2[filter_ptr2++] = brake;
-			if (filter_ptr2 >= FILTER_SAMPLES) {
-				filter_ptr2 = 0;
-			}
-
-			brake = 0.0;
-			for (int i = 0;i < FILTER_SAMPLES;i++) {
-				brake += filter_buffer2[i];
-			}
-			brake /= FILTER_SAMPLES;
+			mean_filter_float(brake, FILTER_SAMPLES);
 		}
 
 		// Map and truncate the read voltage
@@ -219,30 +303,32 @@ static THD_FUNCTION(adc_thread, arg) {
 		// Read the button pins
 		bool cc_button = false;
 		bool rev_button = false;
-		if (use_rx_tx_as_buttons) {
-			cc_button = !palReadPad(HW_UART_TX_PORT, HW_UART_TX_PIN);
-			if (config.cc_button_inverted) {
-				cc_button = !cc_button;
-			}
-			rev_button = !palReadPad(HW_UART_RX_PORT, HW_UART_RX_PIN);
-			if (config.rev_button_inverted) {
-				rev_button = !rev_button;
-			}
-		} else {
-			// When only one button input is available, use it differently depending on the control mode
-			if (config.ctrl_type == ADC_CTRL_TYPE_CURRENT_REV_BUTTON ||
-                    config.ctrl_type == ADC_CTRL_TYPE_CURRENT_REV_BUTTON_BRAKE_CENTER ||
-					config.ctrl_type == ADC_CTRL_TYPE_CURRENT_NOREV_BRAKE_BUTTON ||
-					config.ctrl_type == ADC_CTRL_TYPE_DUTY_REV_BUTTON ||
-					config.ctrl_type == ADC_CTRL_TYPE_PID_REV_BUTTON) {
-				rev_button = !palReadPad(HW_ICU_GPIO, HW_ICU_PIN);
+		if (!with_pas) {
+			if (use_rx_tx_as_buttons) {
+				cc_button = !palReadPad(HW_UART_TX_PORT, HW_UART_TX_PIN);
+				if (config.cc_button_inverted) {
+					cc_button = !cc_button;
+				}
+				rev_button = !palReadPad(HW_UART_RX_PORT, HW_UART_RX_PIN);
 				if (config.rev_button_inverted) {
 					rev_button = !rev_button;
 				}
 			} else {
-				cc_button = !palReadPad(HW_ICU_GPIO, HW_ICU_PIN);
-				if (config.cc_button_inverted) {
-					cc_button = !cc_button;
+				// When only one button input is available, use it differently depending on the control mode
+				if (config.ctrl_type == ADC_CTRL_TYPE_CURRENT_REV_BUTTON ||
+				    config.ctrl_type == ADC_CTRL_TYPE_CURRENT_REV_BUTTON_BRAKE_CENTER ||
+				    config.ctrl_type == ADC_CTRL_TYPE_CURRENT_NOREV_BRAKE_BUTTON ||
+					config.ctrl_type == ADC_CTRL_TYPE_DUTY_REV_BUTTON ||
+					config.ctrl_type == ADC_CTRL_TYPE_PID_REV_BUTTON) {
+					rev_button = !palReadPad(HW_ICU_GPIO, HW_ICU_PIN);
+					if (config.rev_button_inverted) {
+						rev_button = !rev_button;
+					}
+				} else {
+					cc_button = !palReadPad(HW_ICU_GPIO, HW_ICU_PIN);
+					if (config.cc_button_inverted) {
+						cc_button = !cc_button;
+					}
 				}
 			}
 		}
@@ -283,6 +369,14 @@ static THD_FUNCTION(adc_thread, arg) {
 			break;
 		}
 
+		// Filter RPM to avoid glitches
+		const float rpm_now = mc_interface_get_rpm();
+		float rpm_filtered=rpm_now;
+		mean_filter_float(rpm_filtered, RPM_FILTER_SAMPLES);
+
+		// PAS-Sensor
+		if (with_pas) pwr=pas_check(pwr, rpm_filtered);
+
 		// Apply deadband
 		utils_deadband(&pwr, config.hyst, 1.0);
 
@@ -309,7 +403,6 @@ static THD_FUNCTION(adc_thread, arg) {
 		bool current_mode = false;
 		bool current_mode_brake = false;
 		const volatile mc_configuration *mcconf = mc_interface_get_configuration();
-		const float rpm_now = mc_interface_get_rpm();
 		bool send_duty = false;
 
 		// Use the filtered and mapped voltage for control according to the configuration.
@@ -422,20 +515,6 @@ static THD_FUNCTION(adc_thread, arg) {
 
 		// If c is pressed and no throttle is used, maintain the current speed with PID control
 		static bool was_pid = false;
-
-		// Filter RPM to avoid glitches
-		static float filter_buffer[RPM_FILTER_SAMPLES];
-		static int filter_ptr = 0;
-		filter_buffer[filter_ptr++] = mc_interface_get_rpm();
-		if (filter_ptr >= RPM_FILTER_SAMPLES) {
-			filter_ptr = 0;
-		}
-
-		float rpm_filtered = 0.0;
-		for (int i = 0;i < RPM_FILTER_SAMPLES;i++) {
-			rpm_filtered += filter_buffer[i];
-		}
-		rpm_filtered /= RPM_FILTER_SAMPLES;
 
 		if (current_mode && cc_button && fabsf(pwr) < 0.001) {
 			static float pid_rpm = 0.0;
