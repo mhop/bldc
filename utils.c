@@ -124,6 +124,16 @@ int utils_truncate_number_abs(float *number, float max) {
 float utils_map(float x, float in_min, float in_max, float out_min, float out_max) {
 	return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
+float utils_map_bound(const float in, const float in_min, const float in_max, const float out_min, const float out_max) {
+	float out;
+
+	//printf("in:%f in_min:%f in_max:%f out_min:%f out_max:%f\n",
+	//          in, in_min, in_max, out_min, out_max);
+	out=(in - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+	if     (out<out_min) return out_min;
+	else if(out>out_max) return out_max;
+	return out;
+}
 
 int utils_map_int(int x, int in_min, int in_max, int out_min, int out_max) {
 	return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
