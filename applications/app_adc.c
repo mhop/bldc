@@ -36,26 +36,25 @@
 #define FILTER_SAMPLES					5
 #define RPM_FILTER_SAMPLES				8
 
-#define mean_filter_float(val, cnt)    \
-do {                                   \
-	static float filter_buffer[cnt];   \
-	static int filter_ptr = 0;         \
-                                       \
-	filter_buffer[filter_ptr++] = val; \
-	if (filter_ptr >= (cnt)) {         \
-		filter_ptr = 0;                \
-	}                                  \
-	val = 0.0;                         \
-	for (int i = 0;i < (cnt);i++) {    \
-		val += filter_buffer[i];       \
-	}                                  \
-	val /= FILTER_SAMPLES;             \
+#define mean_filter_float(val, cnt)      \
+do {                                     \
+	static float filter_buffer[(cnt)];   \
+	static int filter_ptr = 0;           \
+                                         \
+	filter_buffer[filter_ptr++] = (val); \
+	if (filter_ptr>=(cnt)) {             \
+		filter_ptr = 0;                  \
+	}                                    \
+	val = 0.0;                           \
+	for (int i=0; i<(cnt); i++) {        \
+		val += filter_buffer[i];         \
+	}                                    \
+	val /= (cnt);                        \
 } while(0)
 
 // Threads
 static THD_FUNCTION(adc_thread, arg);
 static THD_WORKING_AREA(adc_thread_wa, 1024);
-
 // Private variables
 static volatile adc_config config;
 static volatile float ms_without_power = 0.0;
@@ -68,33 +67,68 @@ static volatile bool stop_now = true;
 static volatile bool is_running = false;
 
 // PAS -----------------------
-static bool with_pas=true;
-static const unsigned int pas_wait_max=MS2ST(400);
-static const unsigned int move_wait_max=S2ST(5*60);
-static const unsigned int pas_backcnt_min=2;
-static const float pas_rpm_max_no_pedal=900.0; // 6kmh
-static const float pas_pwr_pedal=+0.4;
-static const float pas_pwr_brake=-0.98;
+#define PAS_TIMER_FREQ   10000
+#define PAS_MAGNET_COUNT 8
+#define RpmToPasCounter(f) (PAS_TIMER_FREQ*60/((f)*PAS_MAGNET_COUNT))
+#define PAS_TIMEOUT_MS 400
+#define MsToPasCounter(ms) (PAS_TIMER_FREQ/1000*(ms))
+#define motor_pole_pairs 22
+#define tyre_circum_mm   220
+#define kmh_to_erpm(v) (((v)*1000/60)/(tyre_circum_mm/100)*motor_pole_pairs)
+#define GEAR_CNT 5
+static const bool with_pas=true;
+struct s_cpas {
+	unsigned int wait_max;
+	unsigned int backcnt_min;
+	float erpm_min_move;
+	float erpm_max_no_pedal;
+	float pwr_brake_max;
+	float pwr_pedal_min;
+	float pwr_pedal_max;
+	uint32_t cnt_period_min;
+	uint32_t cnt_period_max;
+	uint32_t cnt_period_max_pedal;
+};
+struct s_pas {
+	icucnt_t t_on;
+	uint32_t cnt_period;
+	uint32_t cnt_off;
+	bool updated;
+};
+
+static const struct s_cpas cpas = {
+	.wait_max             = MS2ST(PAS_TIMEOUT_MS),
+	.backcnt_min          = 3,
+	.erpm_min_move        = kmh_to_erpm(2/10),
+	.erpm_max_no_pedal    = kmh_to_erpm(6),
+	.pwr_brake_max        = -1.00,
+	.pwr_pedal_min        = +0.05,
+	.pwr_pedal_max        = +0.50,
+	.cnt_period_min       = RpmToPasCounter(95),
+	.cnt_period_max       = RpmToPasCounter(5),
+	.cnt_period_max_pedal = MsToPasCounter(PAS_TIMEOUT_MS),
+};
+static struct s_pas pas;
 
 static void icuwidthcb(ICUDriver *icup);
-#define TIMER_FREQ               10000
-static ICUConfig __attribute__((unused))  icucfg = {
+static ICUConfig icucfg = {
 		ICU_INPUT_ACTIVE_HIGH,
-		TIMER_FREQ,
+		PAS_TIMER_FREQ,
 		icuwidthcb,
 		NULL, //icuperiodcb,
 		NULL,
 		HW_ICU_CHANNEL,
 		0
 		};
-static icucnt_t pas_t_on, pas_t_per, pas_t_off;
-static bool pas_updated;
 static void icuwidthcb(ICUDriver *icup) {
-	pas_t_off = icuGetWidthX(icup);
-	pas_t_per = icuGetPeriodX(icup);
-	pas_t_on = chVTGetSystemTimeX();
-	pas_updated=true;
+	pas.cnt_off    = icuGetWidthX(icup);
+	pas.cnt_period = icuGetPeriodX(icup);
+	if(pas.cnt_period < cpas.cnt_period_max_pedal) {
+		pas.t_on       = chVTGetSystemTimeX();
+		pas.updated    = true;
+	}
 }
+// end PAS -----------------------
 
 void app_adc_configure(adc_config *conf) {
 	config = *conf;
@@ -134,57 +168,91 @@ float app_adc_get_voltage2(void) {
 	return read_voltage2;
 }
 
-static float pas_check(float pwr, float rpm)
+// ---------- PAS ---------------------------
+
+/* Checks PAS-Sensor for pedaling, direction and cadence. returns power
+ *  if pedaling forward: 
+ *   power linear to cadence (torque-simulation).
+ *   power can be boosted by throttle
+ *  if not pedaling or pedaling backward:
+ *   power by throttle up to cpas.erpm_max_no_pedal (6km/h)
+ *   if faster than cpas.erpm_max_no_pedal: brake by throttle (if throttle was back to zero after pedaling)
+ */
+static float pas_check(const float p, const float erpm)
 {
+	static float pwr_pas=0.0;
 	static unsigned int backcnt=0;
-	static systime_t t_move=0;
-	//bool moving;
+	float pwr=p, ret=p;
+	static enum {thr_no, thr_power, thr_brake, thr_help} thr_state=thr_no;
+	enum { ped_keep, ped_no, ped_forward, ped_backward } pedaling;
+	const bool print=true;
+	const bool cad2pwr=false;
+
 	systime_t t = chVTGetSystemTimeX();
-	static float pwr_pas;
-
-	if(rpm>20) t_move=t;
-	if (t-t_move > move_wait_max) {
-		//moving=false;
-		LED_RED_OFF();
-		//palSetPad(GPIOA, 6);
-	}else {
-		//moving=true;
-		LED_RED_ON();
-		//palClearPad(GPIOA, 6);
-	}
-
-	if (t-pas_t_on < pas_wait_max) { // pedaling
-		if(pas_updated) {
-			if(pas_t_off<pas_t_per/2) { // backwards
-				if (++backcnt>=pas_backcnt_min) pwr_pas = pas_pwr_brake; // start braking after a few pulses
-				else                            pwr_pas = 0.0;
-			} else {
-				pwr_pas = pas_pwr_pedal;
+	pedaling=ped_keep;
+	if (t-pas.t_on < cpas.wait_max) { // pedaling
+		if (pas.updated) {
+			if (pas.cnt_off < pas.cnt_period/2) { // backward
+				if (++backcnt>=cpas.backcnt_min) pedaling=ped_backward;
+				else                             pedaling=ped_no;
+			} else { // forward
 				backcnt=0;
-			}
-			pas_updated=false;
+				pedaling=ped_forward;
+			} // forward
+			pas.updated=false;
 		}
-		pwr = utils_max_abs(pwr_pas, pwr);
-	} else { // not pedaling
+	} else {
 		backcnt=0;
-		pwr_pas=0;
-		if (rpm>pas_rpm_max_no_pedal) pwr=0.0;
+		pedaling=ped_no;
 	}
-	if (rpm<20) pwr=0.0; // not while not moving
-#if 0
-	static int n=0;
-	if(++n>1000 || pas_updated) {
-		int pp=pwr_pas*100, p=pwr*100, r=rpm*100;
-		commands_printf("pwrpas:%d, pwr:%d rpm:%d mov:%d",
-		                pp, p, r, moving);
-		commands_printf("  t:%d ton:%d tper:%d toff:%d,back:%d\n",
-			                t, pas_t_on, pas_t_per, pas_t_off, backcnt);
-		n=0;
+
+	if(pwr==0.0) thr_state=thr_no;
+	switch (pedaling) {
+		case ped_keep:
+		break;
+		case ped_backward:
+		case ped_no: {
+			pwr_pas=0;
+			if (erpm > cpas.erpm_max_no_pedal) {
+				if (thr_state==thr_no) thr_state=thr_brake; // if not in help-mode and throttle was back to zero after pedaling
+				else pwr=0.0;
+			} else {
+				if(thr_state==thr_no) thr_state=thr_help;
+			}
+			if(thr_state==thr_brake) {
+				pwr=-pwr; // use throttle for braking
+			}
+		}
+		break;
+		case ped_forward: {
+			if (cad2pwr) {
+				pwr_pas=utils_map_bound(pas.cnt_period,
+								cpas.cnt_period_max, cpas.cnt_period_min,
+								cpas.pwr_pedal_min,  cpas.pwr_pedal_max);
+			} else {
+				pwr_pas = (cpas.pwr_pedal_min+cpas.pwr_pedal_max)/2;
+			}
+			if(pwr!=0.0) thr_state=thr_power;
+		}
+		break;
+	} // switch (pedaling)
+	ret = utils_max_abs(pwr, pwr_pas); // returns pwr_pas if abs equal
+	if (erpm<cpas.erpm_min_move) {
+		ret=0.0; // not moving
 	}
-#endif
-	return pwr;
+	
+	if (print) { 
+		static int n=0;
+		if(++n>1000 || pedaling!=ped_keep) {
+			commands_printf("upd:%d pwrpas:%d, pwr:%d erpm:%d thrs:%d ped:%d",
+							pas.updated, (int)pwr_pas*100, (int)pwr*100, (int)erpm, thr_state, pedaling);
+			n=0;
+		}
+	}
+	return ret;
 }
 
+// --------------- end PAS ----------------	
 
 static THD_FUNCTION(adc_thread, arg) {
 	(void)arg;
@@ -197,7 +265,6 @@ static THD_FUNCTION(adc_thread, arg) {
 		palSetPadMode(HW_ICU_GPIO, HW_ICU_PIN, PAL_MODE_ALTERNATE(HW_ICU_GPIO_AF));
 		icuStartCapture(&HW_ICU_DEV);
 		icuEnableNotifications(&HW_ICU_DEV);
-		//palSetPadMode(GPIOA, 6, PAL_MODE_OUTPUT_PUSHPULL); // EXT2 output to light-switcher-enable
 	} else {
 		if (use_rx_tx_as_buttons) {
 			palSetPadMode(HW_UART_TX_PORT, HW_UART_TX_PIN, PAL_MODE_INPUT_PULLUP);
