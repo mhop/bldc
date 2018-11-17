@@ -68,7 +68,6 @@ static volatile bool is_running = false;
 
 // PAS -----------------------
 static const bool with_pas=true;
-static const bool pas_freq_to_pwr=true;
 struct s_cpas {
 	unsigned int wait_max;
 	unsigned int move_wait_max;
@@ -77,10 +76,16 @@ struct s_cpas {
 	float erpm_max_no_pedal;
 	float pwr_pedal_min;
 	float pwr_pedal_max;
-	float pwr_brake;
+	float pwr_brake_min;
+	float pwr_brake_max;
+	float pwr_acc_min;
+	float pwr_acc_max;
 	uint32_t cnt_period_min;
 	uint32_t cnt_period_max;
+	uint32_t cnt_period_diff_min;
+	uint32_t cnt_period_diff_max;
 	uint32_t cnt_period_max_pedal;
+	uint32_t cnt_period_min_brake;
 };
 struct s_pas {
 	icucnt_t t_on;
@@ -101,14 +106,20 @@ static const struct s_cpas cpas = {
 	.wait_max             = MS2ST(PAS_TIMEOUT_MS),
 	.move_wait_max        = S2ST(5*60),
 	.backcnt_min          = 3,
-	.erpm_min_move        = 20,
+	.erpm_min_move        = kmh_to_erpm(2/10),
 	.erpm_max_no_pedal    = kmh_to_erpm(6),
 	.pwr_pedal_min        = +0.20,
-	.pwr_pedal_max        = +0.40,
-	.pwr_brake            = -0.99,
+	.pwr_pedal_max        = +0.50,
+	.pwr_brake_min        = -0.50,
+	.pwr_brake_max        = -0.99,
+	.pwr_acc_min          = +0.50,
+	.pwr_acc_max          = +0.80,
 	.cnt_period_min       = RpmToPasCounter(85),
 	.cnt_period_max       = RpmToPasCounter(40),
+	.cnt_period_diff_min  = RpmToPasCounter(5),
+	.cnt_period_diff_max  = RpmToPasCounter(1),
 	.cnt_period_max_pedal = MsToPasCounter(PAS_TIMEOUT_MS),
+	.cnt_period_min_brake = RpmToPasCounter(40),
 };
 static struct s_pas pas;
 
@@ -170,7 +181,7 @@ float app_adc_get_voltage2(void) {
 	return read_voltage2;
 }
 
-static float pas_check(float pwr, float erpm)
+static float pas_check(float pwr, const float erpm)
 {
 	static unsigned int backcnt=0;
 	static systime_t t_move=0;
@@ -181,21 +192,31 @@ static float pas_check(float pwr, float erpm)
 	if (t-pas.t_on < cpas.wait_max) { // pedaling
 		if (pas.updated) {
 			if (pas.cnt_off < pas.cnt_period/2) { // backward
-				if (++backcnt>=cpas.backcnt_min) pwr_pas = cpas.pwr_brake; // start braking after a few pulses
-				else                             pwr_pas = 0.0;
-			} else { // forward
-				if (pas_freq_to_pwr) {
-					if      (pas.cnt_period < cpas.cnt_period_min) pwr_pas=cpas.pwr_pedal_max;
-					else if (pas.cnt_period > cpas.cnt_period_max) pwr_pas=cpas.pwr_pedal_min;
-					else {
-						pwr_pas=utils_map(pas.cnt_period,
-						                  cpas.cnt_period_max, cpas.cnt_period_min,
-						                  cpas.pwr_pedal_min,  cpas.pwr_pedal_max);
-					}
+				if (++backcnt>=cpas.backcnt_min) { // start braking after a few pulses
+					pwr_pas=utils_map_bound(pas.cnt_period,
+					                        cpas.cnt_period_max_pedal, cpas.cnt_period_min_brake,
+					                        cpas.pwr_brake_min,        cpas.pwr_brake_max);
+					//pwr_pas = cpas.pwr_brake;
 				} else {
-					pwr_pas = cpas.pwr_pedal_max;
+					pwr_pas = 0.0;
 				}
+			} else { // forward
+				// pedaling...
+				pwr_pas=utils_map_bound(pas.cnt_period,
+				                        cpas.cnt_period_max, cpas.cnt_period_min,
+				                        cpas.pwr_pedal_min,  cpas.pwr_pedal_max);
+				// accelerating...
+				static uint32_t cnt_period_old=0;
+				float pwr_pas_acc;
+				uint32_t cnt_period_diff=pas.cnt_period-cnt_period_old;
+				pwr_pas_acc=utils_map_bound(cnt_period_diff,
+				                        cpas.cnt_period_diff_max, cpas.cnt_period_diff_min,
+				                        cpas.pwr_acc_min,  cpas.pwr_acc_max);
+				pwr_pas = utils_max_abs(pwr_pas, pwr_pas_acc);
+				cnt_period_old=pas.cnt_period;
 				backcnt=0;
+				commands_printf("acc cntd:%d max:%d min:%d pwr:%d",
+				                cnt_period_diff, cpas.cnt_period_diff_max, cpas.cnt_period_diff_min, (int)pwr_pas_acc);
 			} // forward
 			pas.updated=false;
 		}
