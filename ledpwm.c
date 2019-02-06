@@ -91,9 +91,9 @@ void ledpwm_update_pwm(void) {
 		LED_GREEN_ON();
 	}
 
-//	if (cnt >= led_values[1]) {
-//		LED_RED_OFF();
-//	} else {
-//		LED_RED_ON();
-//	}
+	if (cnt >= led_values[1]) {
+		LED_RED_OFF();
+	} else {
+		LED_RED_ON();
+	}
 }
