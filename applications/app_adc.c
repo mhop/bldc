@@ -105,6 +105,7 @@ struct s_pas {
 	uint32_t cnt_off;
 	bool updated;
 };
+enum pedaling_state { ped_keep, ped_no, ped_forward, ped_backward };
 
 static const struct s_cpas cpas = {
 	.wait_max             = MS2ST(PAS_TIMEOUT_MS),
@@ -248,20 +249,33 @@ static float map_cad_to_power(const int erpm, float pwr_pas)
 	return pwr_pas;
 }
 
+static void move_check(const systime_t t, const systime_t t_move)
+{
+	bool moving=false;
+	if (t-t_move > cpas.move_wait_max) {
+		moving=false;
+		LED_RED_OFF();
+		//palSetPad(GPIOA, 6);
+	} else {
+		moving=true;
+		LED_RED_ON();
+		//palClearPad(GPIOA, 6);
+	}
+	commands_printf("mov:%d", moving);
+}
+
 static float pas_check(const float p, const float erpm)
 {
-	static unsigned int backcnt=0;
-	static systime_t t_move=0;
 	static float pwr_pas=0.0;
-	bool moving=false;
+	static systime_t t_move;
+	static unsigned int backcnt=0;
 	float pwr=p, ret=p;
 	static enum {thr_no, thr_power, thr_brake, thr_help} thr_state=thr_no;
-	enum { ped_keep, ped_no, ped_forward, ped_backward } pedaling;
 	const bool print=true;
 	systime_t t = chVTGetSystemTimeX();
 
 	if(pwr==0.0) thr_state=thr_no;
-	pedaling=ped_keep;
+	enum pedaling_state pedaling=ped_keep;
 	if (t-pas.t_on < cpas.wait_max) { // pedaling
 		if (pas.updated) {
 			if (pas.cnt_off < pas.cnt_period/2) { // backward
@@ -315,27 +329,13 @@ static float pas_check(const float p, const float erpm)
 	} else {
 		//t_move=t;
 	}
-	if(false) {
-		if (t-t_move > cpas.move_wait_max) {
-			moving=false;
-			LED_RED_OFF();
-			//palSetPad(GPIOA, 6);
-		} else {
-			moving=true;
-			LED_RED_ON();
-			//palClearPad(GPIOA, 6);
-		}
-	}
+	if(false) move_check(t, t_move);
 	if (print) { 
 		static int n=0;
 		if(++n>1000 || pedaling!=ped_keep) {
 			const int pp=pwr_pas*100, p=pwr*100, r=erpm; // rmin=cpas.erpm_min_move, rmax=cpas.erpm_max_no_pedal;
-			commands_printf("upd:%d pwrpas:%d, pwr:%d erpm:%d mov:%d thrs:%d ped:%d",
-							pas.updated, pp, p, r, moving, thr_state, pedaling);
-			//commands_printf("  t:%d ton:%d tper:%d toff:%d,back:%d",
-			//			            t, pas.t_on, pas.cnt_period, pas.cnt_off, backcnt);
-			//commands_printf("  rpm:%d min:%d max:%d cnt:%d min:%d max:%d",
-			//				r, rmin, rmax, pas.cnt_period, cpas.cnt_period_min, cpas.cnt_period_max);
+			commands_printf("upd:%d pwrpas:%d, pwr:%d erpm:%d thrs:%d ped:%d",
+							pas.updated, pp, p, r, thr_state, pedaling);
 			n=0;
 		}
 	}
