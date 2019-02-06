@@ -240,7 +240,7 @@ static float pas_check(float pwr, const float erpm)
 		LED_RED_ON();
 		//palClearPad(GPIOA, 6);
 	}
-#if 0
+#if 1
 	static int n=0;
 	if(++n>1000 || pas.updated) {
 		const int pp=pwr_pas*100, p=pwr*100, r=erpm, rmin=cpas.erpm_min_move, rmax=cpas.erpm_max_no_pedal;
