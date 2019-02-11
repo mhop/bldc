@@ -36,20 +36,20 @@
 #define FILTER_SAMPLES					5
 #define RPM_FILTER_SAMPLES				8
 
-#define mean_filter_float(val, cnt)    \
-do {                                   \
-	static float filter_buffer[cnt];   \
-	static int filter_ptr = 0;         \
-                                       \
-	filter_buffer[++filter_ptr] = val; \
-	if (filter_ptr >= (cnt)) {         \
-		filter_ptr = 0;                \
-	}                                  \
-	val = 0.0;                         \
-	for (int i = 0;i < (cnt);++i) {    \
-		val += filter_buffer[i];       \
-	}                                  \
-	val /= FILTER_SAMPLES;             \
+#define mean_filter_float(val, cnt)      \
+do {                                     \
+	static float filter_buffer[(cnt)];   \
+	static int filter_ptr = 0;           \
+                                         \
+	filter_buffer[filter_ptr++] = (val); \
+	if (filter_ptr >= (cnt)) {           \
+		filter_ptr = 0;                  \
+	}                                    \
+	val = 0.0;                           \
+	for (int i = 0;i < (cnt);++i) {      \
+		val += filter_buffer[i];         \
+	}                                    \
+	val /= (cnt);                        \
 } while(0)
 
 // Threads
@@ -67,27 +67,24 @@ static volatile bool stop_now = true;
 static volatile bool is_running = false;
 
 // PAS -----------------------
-#define PAS_TIMER_FREQ   10000
-#define PAS_MAGNET_COUNT 8
-#define RpmToPasCounter(f) (PAS_TIMER_FREQ*60/((f)*PAS_MAGNET_COUNT))
-#define PAS_TIMEOUT_MS 400
-#define MsToPasCounter(ms) (PAS_TIMER_FREQ/1000*(ms))
+#define PAS_TIMER_FREQ   10000   // resolution of pas-timer
+#define PAS_MAGNET_COUNT 8       // how many magnets are in the PAS-Ring
+#define PAS_TIMEOUT_MS   400     // lesser this time between pas-pulse pedealing is detected 
 #define motor_pole_pairs 22
 #define tyre_circum_mm   220
-#define kmh_to_erpm(v) (((v)*1000/60)/(tyre_circum_mm/100)*motor_pole_pairs)
-#define GEAR_CNT 5
+#define MsToPasCounter(ms) (PAS_TIMER_FREQ/1000*(ms))
+#define RpmToPasCounter(f) (PAS_TIMER_FREQ*60/((f)*PAS_MAGNET_COUNT))
+#define kmh_to_erpm(v)     (((v)*1000/60)/(tyre_circum_mm/100)*motor_pole_pairs)
 static const bool with_pas=true;
 struct s_cpas {
-	unsigned int wait_max;
-	unsigned int backcnt_min;
-	float erpm_min_move;
-	float erpm_max_no_pedal;
-	float pwr_brake_max;
-	float pwr_pedal_min;
-	float pwr_pedal_max;
-	uint32_t cnt_period_min;
-	uint32_t cnt_period_max;
-	uint32_t cnt_period_max_pedal;
+	unsigned int wait_max;         // maximal time in system-clocks between PAS impulses to dectect pedaling (use MS2ST(t)()
+	float erpm_min_move;           // minmal erpm to detect moving (use kmh_to_erpm(v))
+	float erpm_max_no_pedal;       // when not pedaling throtte can speed up to this erpm (use kmh_to_erpm(v))
+	float pwr_pedal_min;           // torque-sim starting at this power (0.0-1.0)
+	float pwr_pedal_max;           // torque-sim ending at this power (0.0-1.0)
+	uint32_t cnt_period_min;       // torque-sim increase stopps at this time between PAS impulses (use RpmToPasCounter(r)) 
+	uint32_t cnt_period_max;       // torque-sim increase starts at this time between PAS impulses (use RpmToPasCounter(r))
+	uint32_t cnt_period_max_pedal; // according to wait_max (use MsToPasCounter(t))
 };
 struct s_pas {
 	icucnt_t t_on;
@@ -98,14 +95,12 @@ struct s_pas {
 
 static const struct s_cpas cpas = {
 	.wait_max             = MS2ST(PAS_TIMEOUT_MS),
-	.backcnt_min          = 3,
-	.erpm_min_move        = kmh_to_erpm(2/10),
+	.erpm_min_move        = kmh_to_erpm(0.5),
 	.erpm_max_no_pedal    = kmh_to_erpm(6),
-	.pwr_brake_max        = -1.00,
-	.pwr_pedal_min        = +0.05,
-	.pwr_pedal_max        = +0.50,
-	.cnt_period_min       = RpmToPasCounter(95),
-	.cnt_period_max       = RpmToPasCounter(5),
+	.pwr_pedal_min        = 0.05,
+	.pwr_pedal_max        = 0.45,
+	.cnt_period_min       = RpmToPasCounter(100),
+	.cnt_period_max       = RpmToPasCounter(45),
 	.cnt_period_max_pedal = MsToPasCounter(PAS_TIMEOUT_MS),
 };
 static struct s_pas pas;
@@ -170,7 +165,13 @@ float app_adc_get_voltage2(void) {
 
 // ---------- PAS ---------------------------
 
-/* Checks PAS-Sensor for pedaling, direction and cadence. returns power
+/* Checks PAS-Sensor for pedaling, direction and cadence. 
+ * Parameters: 
+ *   p: power by throttle-controller (0.0-1.0)
+ *   erpm: electrical rpm of motor
+ *  return:
+ *   power (0.0-1.0)
+ * 
  *  if pedaling forward: 
  *   power linear to cadence (torque-simulation).
  *   power can be boosted by throttle
@@ -179,77 +180,55 @@ float app_adc_get_voltage2(void) {
  *   if faster than cpas.erpm_max_no_pedal: brake by throttle (if throttle was back to zero after pedaling)
  */
 static float pas_check(const float p, const float erpm)
-{
+{	
+	typedef enum { thr_no, thr_brake, thr_power, thr_help } t_thr_state;
+	typedef enum { ped_keep, ped_no, ped_forward } t_pedaling;
+	static t_thr_state thr_state=thr_no;
 	static float pwr_pas=0.0;
-	static unsigned int backcnt=0;
-	float pwr=p, ret=p;
-	static enum {thr_no, thr_power, thr_brake, thr_help} thr_state=thr_no;
-	enum { ped_keep, ped_no, ped_forward, ped_backward } pedaling;
-	const bool print=true;
-	const bool cad2pwr=false;
+	float pwr=p;
+
+	if (erpm<cpas.erpm_min_move) return 0.0; // not moving
 
 	systime_t t = chVTGetSystemTimeX();
-	pedaling=ped_keep;
+	t_pedaling pedaling=ped_keep;
 	if (t-pas.t_on < cpas.wait_max) { // pedaling
 		if (pas.updated) {
 			if (pas.cnt_off < pas.cnt_period/2) { // backward
-				if (++backcnt>=cpas.backcnt_min) pedaling=ped_backward;
-				else                             pedaling=ped_no;
+				pedaling=ped_no;
 			} else { // forward
-				backcnt=0;
 				pedaling=ped_forward;
 			} // forward
 			pas.updated=false;
 		}
 	} else {
-		backcnt=0;
 		pedaling=ped_no;
 	}
 
-	if(pwr==0.0) thr_state=thr_no;
+	if (pwr==0.0) thr_state=thr_no;
+	if (thr_state==thr_brake) return -pwr; // braking overules
 	switch (pedaling) {
 		case ped_keep:
 		break;
-		case ped_backward:
 		case ped_no: {
-			pwr_pas=0;
+			pwr_pas=0.0;
 			if (erpm > cpas.erpm_max_no_pedal) {
-				if (thr_state==thr_no) thr_state=thr_brake; // if not in help-mode and throttle was back to zero after pedaling
-				else pwr=0.0;
+				if (thr_state<thr_power) thr_state=thr_brake; // if not in help-mode and throttle was back to zero after pedaling
+				else                     return 0.0;
 			} else {
-				if(thr_state==thr_no) thr_state=thr_help;
-			}
-			if(thr_state==thr_brake) {
-				pwr=-pwr; // use throttle for braking
+				if (thr_state==thr_no) thr_state=thr_help;
 			}
 		}
 		break;
 		case ped_forward: {
-			if (cad2pwr) {
-				pwr_pas=utils_map_bound(pas.cnt_period,
-								cpas.cnt_period_max, cpas.cnt_period_min,
-								cpas.pwr_pedal_min,  cpas.pwr_pedal_max);
-			} else {
-				pwr_pas = (cpas.pwr_pedal_min+cpas.pwr_pedal_max)/2;
-			}
-			if(pwr!=0.0) thr_state=thr_power;
+			pwr_pas=utils_map(pas.cnt_period,
+						 	  cpas.cnt_period_max, cpas.cnt_period_min,
+							  cpas.pwr_pedal_min,  cpas.pwr_pedal_max);
+			utils_truncate_number(&pwr_pas, cpas.pwr_pedal_min, cpas.pwr_pedal_max);
+			if (pwr!=0.0) thr_state=thr_power;
 		}
 		break;
 	} // switch (pedaling)
-	ret = utils_max_abs(pwr, pwr_pas); // returns pwr_pas if abs equal
-	if (erpm<cpas.erpm_min_move) {
-		ret=0.0; // not moving
-	}
-	
-	if (print) { 
-		static int n=0;
-		if(++n>1000 || pedaling!=ped_keep) {
-			commands_printf("upd:%d pwrpas:%d, pwr:%d erpm:%d thrs:%d ped:%d",
-							pas.updated, (int)pwr_pas*100, (int)pwr*100, (int)erpm, thr_state, pedaling);
-			n=0;
-		}
-	}
-	return ret;
+	return utils_max_abs(pwr, pwr_pas); // returns pwr_pas if abs equal
 }
 
 // --------------- end PAS ----------------	
