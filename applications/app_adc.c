@@ -101,7 +101,7 @@ static const struct s_cpas cpas = {
 	.erpm_max_no_pedal    = kmh_to_erpm(6),
 	.pwr_pedal_min        = +0.05,
 	.pwr_pedal_max        = +0.50,
-	.cnt_period_min       = RpmToPasCounter(95),
+	.cnt_period_min       = RpmToPasCounter(100),
 	.cnt_period_max       = RpmToPasCounter(40),
 	.cnt_period_max_pedal = MsToPasCounter(PAS_TIMEOUT_MS),
 };
