@@ -67,27 +67,25 @@ static volatile bool stop_now = true;
 static volatile bool is_running = false;
 
 // PAS -----------------------
-#define PAS_TIMER_FREQ   10000
-#define PAS_MAGNET_COUNT 8
-#define RpmToPasCounter(f) (PAS_TIMER_FREQ*60/((f)*PAS_MAGNET_COUNT))
-#define PAS_TIMEOUT_MS 400
-#define MsToPasCounter(ms) (PAS_TIMER_FREQ/1000*(ms))
+#define PAS_TIMER_FREQ   10000   // resolution of pas-timer
+#define PAS_MAGNET_COUNT 8       // how many magnets are in the PAS-Ring
+#define PAS_TIMEOUT_MS   400     // lesser this time between pas-pulse pedealing is detected 
 #define motor_pole_pairs 22
 #define tyre_circum_mm   220
+#define MsToPasCounter(ms) (PAS_TIMER_FREQ/1000*(ms))
+#define RpmToPasCounter(f) (PAS_TIMER_FREQ*60/((f)*PAS_MAGNET_COUNT))
 #define kmh_to_erpm(v) (((v)*1000/60)/(tyre_circum_mm/100)*motor_pole_pairs)
-#define GEAR_CNT 5
 static const bool with_pas=true;
 struct s_cpas {
-	unsigned int wait_max;
-	unsigned int backcnt_min;
-	float erpm_min_move;
-	float erpm_max_no_pedal;
-	float pwr_brake_max;
-	float pwr_pedal_min;
-	float pwr_pedal_max;
-	uint32_t cnt_period_min;
-	uint32_t cnt_period_max;
-	uint32_t cnt_period_max_pedal;
+	unsigned int wait_max;      // maximal time in system-clocks between PAS impulses to dectect pedaling (use MS2ST(t)()
+	unsigned int backcnt_min;   // count of pas-puleses to detect backwar pedaling
+	float erpm_min_move;        // minmal erpm to detect moving (use kmh_to_erpm(v))
+	float erpm_max_no_pedal;    // when not pedaling throtte can speed up to this erpm (use kmh_to_erpm(v))
+	float pwr_pedal_min;        // torque-sim starting at this power (0.0-1.0)
+	float pwr_pedal_max;        // torque-sim ending at this power (0.0-1.0)
+	uint32_t cnt_period_min;    // torque-sim increase stopps at this time between PAS impulses (use RpmToPasCounter(r)) 
+	uint32_t cnt_period_max;    // torque-sim increase starts at this time between PAS impulses (use RpmToPasCounter(r))
+	uint32_t cnt_period_max_pedal; // according to wait_max (use MsToPasCounter(t))
 };
 struct s_pas {
 	icucnt_t t_on;
@@ -101,7 +99,6 @@ static const struct s_cpas cpas = {
 	.backcnt_min          = 3,
 	.erpm_min_move        = kmh_to_erpm(2/10),
 	.erpm_max_no_pedal    = kmh_to_erpm(6),
-	.pwr_brake_max        = -1.00,
 	.pwr_pedal_min        = +0.05,
 	.pwr_pedal_max        = +0.50,
 	.cnt_period_min       = RpmToPasCounter(95),
@@ -170,7 +167,13 @@ float app_adc_get_voltage2(void) {
 
 // ---------- PAS ---------------------------
 
-/* Checks PAS-Sensor for pedaling, direction and cadence. returns power
+/* Checks PAS-Sensor for pedaling, direction and cadence. 
+ * Parameters: 
+ *   p: power by throttle (0.0-1.0)
+ *   erpm: electrical rpm of motor
+ *  return:
+ *   power (0.0-1.0)
+ * 
  *  if pedaling forward: 
  *   power linear to cadence (torque-simulation).
  *   power can be boosted by throttle
@@ -185,8 +188,8 @@ static float pas_check(const float p, const float erpm)
 	float pwr=p, ret=p;
 	static enum {thr_no, thr_power, thr_brake, thr_help} thr_state=thr_no;
 	enum { ped_keep, ped_no, ped_forward, ped_backward } pedaling;
-	const bool print=true;
 	const bool cad2pwr=false;
+	const bool print=true;
 
 	systime_t t = chVTGetSystemTimeX();
 	pedaling=ped_keep;
