@@ -97,12 +97,12 @@ struct s_pas {
 static const struct s_cpas cpas = {
 	.wait_max             = MS2ST(PAS_TIMEOUT_MS),
 	.backcnt_min          = 3,
-	.erpm_min_move        = kmh_to_erpm(1/2),
+	.erpm_min_move        = kmh_to_erpm(0.5),
 	.erpm_max_no_pedal    = kmh_to_erpm(6),
 	.pwr_pedal_min        = +0.05,
 	.pwr_pedal_max        = +0.50,
 	.cnt_period_min       = RpmToPasCounter(95),
-	.cnt_period_max       = RpmToPasCounter(5),
+	.cnt_period_max       = RpmToPasCounter(30),
 	.cnt_period_max_pedal = MsToPasCounter(PAS_TIMEOUT_MS),
 };
 static struct s_pas pas;
@@ -183,7 +183,7 @@ float app_adc_get_voltage2(void) {
  */
 static float pas_check(const float p, const float erpm)
 {
-	typedef enum{thr_no, thr_brake, thr_power, thr_help} t_thr_state;
+	typedef enum {thr_no, thr_brake, thr_power, thr_help} t_thr_state;
 	typedef enum { ped_keep, ped_no, ped_forward, ped_backward } t_pedaling;
 	static t_thr_state thr_state=thr_no;
 	static float pwr_pas=0.0;
@@ -245,8 +245,8 @@ static float pas_check(const float p, const float erpm)
 	if (print) { 
 		static int n=0;
 		if((++n>1000) || (pedaling>ped_no)) {
-			commands_printf("pp:%d pwr:%d pin:%d rpm:%d ret:%d thrs:%d ped:%d",
-				(int)(pwr_pas*100), (int)(pwr*100), (int)(p*100), (int)erpm, (int)(ret*100), (int)thr_state, (int)pedaling);
+			commands_printf("pp:%d pwr:%d ret:%d per:%d min:%d, max:%d",
+				(int)(pwr_pas*100), (int)(pwr*100), (int)(ret*100), pas.cnt_period, cpas.cnt_period_min, cpas.cnt_period_max);
 			n=0;
 		}
 	}
