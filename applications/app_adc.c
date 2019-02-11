@@ -181,14 +181,16 @@ float app_adc_get_voltage2(void) {
  *   power by throttle up to cpas.erpm_max_no_pedal (6km/h)
  *   if faster than cpas.erpm_max_no_pedal: brake by throttle (if throttle was back to zero after pedaling)
  */
+	typedef enum{thr_no, thr_power, thr_brake, thr_help} ttstate;
+	static ttstate thr_state=thr_no;
 static float pas_check(const float p, const float erpm)
 {
 	static float pwr_pas=0.0;
 	static unsigned int backcnt=0;
+		static int n=0;
 	float pwr=p, ret=p;
-	static enum {thr_no, thr_power, thr_brake, thr_help} thr_state=thr_no;
 	enum { ped_keep, ped_no, ped_forward, ped_backward } pedaling;
-	const bool cad2pwr=true;
+	const bool cad2pwr=false;
 	const bool print=true;
 
 	systime_t t = chVTGetSystemTimeX();
@@ -245,10 +247,9 @@ static float pas_check(const float p, const float erpm)
 	}
 	
 	if (print) { 
-		static int n=0;
-		if(++n>1000 || pedaling!=ped_keep) {
-			commands_printf("upd:%d pwrpas:%d, pwr:%d erpm:%d thrs:%d ped:%d",
-							pas.updated, (int)pwr_pas*100, (int)pwr*100, (int)erpm, thr_state, pedaling);
+		if((++n>1000) || (pedaling>ped_no)) {
+			commands_printf("n:%d upd:%d pp:%d pwr:%d rpm:%d thrs:%d ped:%d",
+							n, pas.updated, (int)pwr_pas*100, (int)pwr*100, (int)erpm, (int)thr_state, (int)pedaling);
 			n=0;
 		}
 	}
@@ -305,12 +306,12 @@ static THD_FUNCTION(adc_thread, arg) {
 
 		read_voltage = pwr;
 
-float pwr1=pwr;
+//float pwr1=pwr;
 		// Optionally apply a mean value filter
 		if (config.use_filter) {
 			mean_filter_float(pwr, FILTER_SAMPLES);
 		}
-float pwr2=pwr;
+//float pwr2=pwr;
 
 		// Map the read voltage
 		switch (config.ctrl_type) {
@@ -333,7 +334,7 @@ float pwr2=pwr;
 			pwr = utils_map(pwr, config.voltage_start, config.voltage_end, 0.0, 1.0);
 			break;
 		}
-float pwr3=pwr;
+//float pwr3=pwr;
 
 		// Truncate the read voltage
 		utils_truncate_number(&pwr, 0.0, 1.0);
@@ -432,7 +433,7 @@ float pwr3=pwr;
 			break;
 		}
 
-float pwr4=pwr;
+//float pwr4=pwr;
 		// Filter RPM to avoid glitches
 		const float rpm_now = mc_interface_get_rpm();
 		float rpm_filtered=rpm_now;
@@ -440,8 +441,8 @@ float pwr4=pwr;
 
 		static int nx=0;
 		if(++nx>1000) {
-			commands_printf("p:%d p1:%d p2:%d, p3:%d p4:%d",
-							(int)pwr*100, (int)pwr1*100, (int)pwr2*100, (int)pwr3*100, (int)pwr4*100);
+			commands_printf("p:%d v:%d",
+							(int)pwr*100, (int)read_voltage*100);
 			nx=0;
 		}
 
