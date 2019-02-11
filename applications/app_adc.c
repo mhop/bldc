@@ -305,10 +305,12 @@ static THD_FUNCTION(adc_thread, arg) {
 
 		read_voltage = pwr;
 
+float pwr1=pwr;
 		// Optionally apply a mean value filter
 		if (config.use_filter) {
 			mean_filter_float(pwr, FILTER_SAMPLES);
 		}
+float pwr2=pwr;
 
 		// Map the read voltage
 		switch (config.ctrl_type) {
@@ -331,6 +333,7 @@ static THD_FUNCTION(adc_thread, arg) {
 			pwr = utils_map(pwr, config.voltage_start, config.voltage_end, 0.0, 1.0);
 			break;
 		}
+float pwr3=pwr;
 
 		// Truncate the read voltage
 		utils_truncate_number(&pwr, 0.0, 1.0);
@@ -429,10 +432,18 @@ static THD_FUNCTION(adc_thread, arg) {
 			break;
 		}
 
+float pwr4=pwr;
 		// Filter RPM to avoid glitches
 		const float rpm_now = mc_interface_get_rpm();
 		float rpm_filtered=rpm_now;
 		mean_filter_float(rpm_filtered, RPM_FILTER_SAMPLES);
+
+		static int n=0;
+		if(++n>1000) {
+			commands_printf("p:%d p1:%d p2:%d, p3:%d p4:%d",
+							(int)pwr*100, (int)pwr1*100, (int)pwr2*100, (int)pwr3*100, (int)pwr4*100);
+			n=0;
+		}
 
 		// PAS-Sensor
 		if (with_pas) pwr=pas_check(pwr, rpm_filtered);
