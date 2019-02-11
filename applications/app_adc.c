@@ -188,7 +188,7 @@ static float pas_check(const float p, const float erpm)
 	float pwr=p, ret=p;
 	static enum {thr_no, thr_power, thr_brake, thr_help} thr_state=thr_no;
 	enum { ped_keep, ped_no, ped_forward, ped_backward } pedaling;
-	const bool cad2pwr=false;
+	const bool cad2pwr=true;
 	const bool print=true;
 
 	systime_t t = chVTGetSystemTimeX();
