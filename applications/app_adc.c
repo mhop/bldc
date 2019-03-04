@@ -203,7 +203,7 @@ static float pas_check(const float p, const float erpm)
 	} else {
 		pedaling=ped_no;
 	}
-
+pedaling=ped_forward;
 	if (pwr==0.0) thr_state=thr_no;
 	if (thr_state==thr_brake) return -pwr; // braking overules
 	switch (pedaling) {
@@ -224,6 +224,7 @@ static float pas_check(const float p, const float erpm)
 						 	  cpas.cnt_period_max, cpas.cnt_period_min,
 							  cpas.pwr_pedal_min,  cpas.pwr_pedal_max);
 			utils_truncate_number(&pwr_pas, cpas.pwr_pedal_min, cpas.pwr_pedal_max);
+			pwr_pas=0;
 			if (pwr!=0.0) thr_state=thr_power;
 		}
 		break;
