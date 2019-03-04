@@ -167,7 +167,7 @@ float app_adc_get_voltage2(void) {
 
 /* Checks PAS-Sensor for pedaling, direction and cadence. 
  * Parameters: 
- *   p: power by throttle-controller (0.0-1.0)
+ *   p:    power by throttle-controller (0.0-1.0)
  *   erpm: electrical rpm of motor
  *  return:
  *   power (0.0-1.0)
@@ -177,7 +177,8 @@ float app_adc_get_voltage2(void) {
  *   power can be boosted by throttle
  *  if not pedaling or pedaling backward:
  *   power by throttle up to cpas.erpm_max_no_pedal (6km/h)
- *   if faster than cpas.erpm_max_no_pedal: brake by throttle (if throttle was back to zero after pedaling)
+ *   if faster than cpas.erpm_max_no_pedal: brake by throttle (if
+ *                        throttle was back to zero after pedaling)
  */
 static float pas_check(const float p, const float erpm)
 {	
@@ -203,7 +204,7 @@ static float pas_check(const float p, const float erpm)
 	} else {
 		pedaling=ped_no;
 	}
-
+        pedaling=ped_forward;
 	if (pwr==0.0) thr_state=thr_no;
 	if (thr_state==thr_brake) return -pwr; // braking overules
 	switch (pedaling) {
@@ -224,6 +225,7 @@ static float pas_check(const float p, const float erpm)
 						 	  cpas.cnt_period_max, cpas.cnt_period_min,
 							  cpas.pwr_pedal_min,  cpas.pwr_pedal_max);
 			utils_truncate_number(&pwr_pas, cpas.pwr_pedal_min, cpas.pwr_pedal_max);
+			pwr_pas=0;
 			if (pwr!=0.0) thr_state=thr_power;
 		}
 		break;
