@@ -31,7 +31,6 @@ int utils_truncate_number(float *number, float min, float max);
 int utils_truncate_number_int(int *number, int min, int max);
 int utils_truncate_number_abs(float *number, float max);
 float utils_map(float x, float in_min, float in_max, float out_min, float out_max);
-float utils_map_bound(const float x, const float in_min, const float in_max, const float out_min, const float out_max);
 int utils_map_int(int x, int in_min, int in_max, int out_min, int out_max);
 void utils_deadband(float *value, float tres, float max);
 float utils_angle_difference(float angle1, float angle2);
