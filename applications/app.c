@@ -26,6 +26,8 @@
 #include "comm_can.h"
 #include "imu.h"
 
+#include "commands.h"
+
 // Private variables
 static app_configuration appconf;
 static virtual_timer_t output_vt;

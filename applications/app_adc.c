@@ -196,12 +196,20 @@ static float pas_check(const float p, const float p2, const float erpm)
 	float pwr=p;
     float torq=p2;
 
+    {
+        static int i=0;
+        if(++i % 1000 == 0) {
+            commands_printf("pwr:%d erpm:%d tor:%d past:%d \n", (int)(pwr*100), (int)(erpm*100), (int)(torq*100), pas.t_on);
+        }
+    }
+
 	if (erpm<cpas.erpm_min_move) return 0.0; // not moving
 
 	systime_t t = chVTGetSystemTimeX();
 	t_pedaling pedaling=ped_keep;
 	if (t-pas.t_on < cpas.wait_max) { // pedaling
 		if (pas.updated) {
+            commands_printf("pas\n");
             if(!use_torque) {
                 if (pas.cnt_off < pas.cnt_period/2) { // backward
                     pedaling=ped_no;
@@ -245,6 +253,13 @@ static float pas_check(const float p, const float p2, const float erpm)
 		}
 		break;
 	} // switch (pedaling)
+    {
+        static int i=0;
+        if(++i % 1000 == 0) {
+            commands_printf("pwr_pas:%d pwr:%d erpm:%d pedal:%d tor:%d past:%d \n", (int)(pwr_pas*100), (int)(pwr*100), (int)(erpm*100), pedaling, (int)(torq*100), pas.t_on); 
+
+        }
+    }
 	return utils_max_abs(pwr, pwr_pas); // returns pwr_pas if abs equal
 }
 
@@ -275,7 +290,6 @@ static THD_FUNCTION(adc_thread, arg) {
 	for(;;) {
 		// Sleep for a time according to the specified rate
 		systime_t sleep_time = CH_CFG_ST_FREQUENCY / config.update_rate_hz;
-
 		// At least one tick should be slept to not block the other threads
 		if (sleep_time == 0) {
 			sleep_time = 1;

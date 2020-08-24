@@ -734,7 +734,7 @@ void terminal_process_string(char *str) {
 
 	// The help command
 	else if (strcmp(argv[0], "help") == 0) {
-		commands_printf("Valid commands are:");
+		commands_printf("XValid commands are:");
 		commands_printf("help");
 		commands_printf("  Show this help");
 
