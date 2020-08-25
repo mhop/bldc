@@ -52,6 +52,12 @@ do {                                     \
 	val /= (cnt);                        \
 } while(0)
 
+#define printf_nth(n, ...) \
+do{                    \
+   static int i=0;      \
+   if(++i % 1/*n*/ == 0) { commands_printf(__VA_ARGS__); }  \
+} while(0)
+
 // Threads
 static THD_FUNCTION(adc_thread, arg);
 static THD_WORKING_AREA(adc_thread_wa, 1024);
@@ -196,12 +202,7 @@ static float pas_check(const float p, const float p2, const float erpm)
 	float pwr=p;
     float torq=p2;
 
-    {
-        static int i=0;
-        if(++i % 1000 == 0) {
-            commands_printf("pwr:%d erpm:%d tor:%d past:%d \n", (int)(pwr*100), (int)(erpm*100), (int)(torq*100), pas.t_on);
-        }
-    }
+    printf_nth(100,"pwr:%d erpm:%d tor:%d past:%d \n", (int)(pwr*100), (int)(erpm*100), (int)(torq*100), pas.t_on);
 
 	if (erpm<cpas.erpm_min_move) return 0.0; // not moving
 
@@ -241,7 +242,9 @@ static float pas_check(const float p, const float p2, const float erpm)
 		break;
 		case ped_forward: {
             if(use_torque) {
-                pwr_pas=torq*pas.assist_percent*(cpas.fact_pas/pas.cnt_period)*(1+erpm*cpas.fact_erpm);
+                pwr_pas=torq*0.3;
+                float pwr_pas_x=torq*pas.assist_percent*(cpas.fact_pas/pas.cnt_period)*(1+erpm*cpas.fact_erpm);
+                printf_nth(100, "pwr_torq:%d cad:%d\n", (int)(pwr_pas_x*100), (int)(cpas.fact_pas/pas.cnt_period*100));
             } else {
                 pwr_pas=utils_map(pas.cnt_period,
                                   cpas.cnt_period_max, cpas.cnt_period_min,
@@ -253,14 +256,10 @@ static float pas_check(const float p, const float p2, const float erpm)
 		}
 		break;
 	} // switch (pedaling)
-    {
-        static int i=0;
-        if(++i % 1000 == 0) {
-            commands_printf("pwr_pas:%d pwr:%d erpm:%d pedal:%d tor:%d past:%d \n", (int)(pwr_pas*100), (int)(pwr*100), (int)(erpm*100), pedaling, (int)(torq*100), pas.t_on); 
 
-        }
-    }
-	return utils_max_abs(pwr, pwr_pas); // returns pwr_pas if abs equal
+    printf_nth(100, "pwr_pas:%d pwr:%d erpm:%d pedal:%d tor:%d past:%d \n", (int)(pwr_pas*100), (int)(pwr*100), (int)(erpm*100), pedaling, (int)(torq*100), pas.t_on);
+
+ 	return utils_max_abs(pwr, pwr_pas); // returns pwr_pas if abs equal
 }
 
 // --------------- end PAS ----------------
@@ -454,7 +453,7 @@ static THD_FUNCTION(adc_thread, arg) {
 
 		// PAS/Torque-Sensor
 		if (with_pas) pwr=pas_check(pwr, brake, rpm_filtered);
-
+        printf_nth(100, "pas_check:%d", (int)pwr);
 		// Apply deadband
 		utils_deadband(&pwr, config.hyst, 1.0);
 
